@@ -8,6 +8,7 @@ from django.db import transaction, IntegrityError
 from django.db.models import Count, Sum, Case, When, IntegerField, Value, Q
 from django.utils import timezone
 from datetime import timedelta
+from django.core.management import call_command
 
 from .models import Post, Comment, Like, Profile
 from .serializers import (
@@ -319,3 +320,15 @@ class UserProfileView(APIView):
             'recent_comments': CommentSerializer(recent_comments, many=True, context={'request': request}).data
         })
 
+
+class SeedDataView(APIView):
+    """Temporary view to trigger seeding from the browser"""
+    permission_classes = [AllowAny]
+    authentication_classes = [CsrfExemptSessionAuthentication]
+
+    def get(self, request):
+        try:
+            call_command('seed_data')
+            return Response({'message': 'Database seeded successfully! Created 50 users, posts, and comments.'})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
