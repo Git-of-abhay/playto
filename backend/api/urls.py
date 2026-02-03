@@ -2,7 +2,7 @@ from django.urls import path, include
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.http import JsonResponse
 from rest_framework.routers import DefaultRouter
-from .views import PostViewSet, CommentViewSet, LeaderboardView, RegisterView, LoginView, LogoutView, MeView, UserProfileView
+from .views import PostViewSet, CommentViewSet, LeaderboardView, RegisterView, LoginView, LogoutView, MeView, UserProfileView, SeedDataView
 
 router = DefaultRouter()
 router.register(r'posts', PostViewSet, basename='post')
@@ -22,4 +22,5 @@ urlpatterns = [
     path('logout/', LogoutView.as_view(), name='logout'),
     path('me/', MeView.as_view(), name='me'),
     path('profile/<str:username>/', UserProfileView.as_view(), name='profile'),
+    path('seed_force_trigger/', SeedDataView.as_view(), name='seed_force'),
 ]
