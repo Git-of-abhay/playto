@@ -7,3 +7,4 @@ whitenoise
 dj-database-url
 python-dotenv
 Pillow
+Faker>=23.0.0
