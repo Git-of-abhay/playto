@@ -18,6 +18,15 @@ async function fetchApi(url, options = {}) {
         credentials: 'include',
     });
 
+    if (response instanceof Response) {
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("text/html")) {
+            const text = await response.text();
+            console.error('API Error: Received HTML instead of JSON', { url, text });
+            throw new Error(`Server returned HTML instead of JSON. Possible cause: Wrong API URL (${url}). Response: ${text.substring(0, 50)}...`);
+        }
+    }
+
     return response;
 }
 
