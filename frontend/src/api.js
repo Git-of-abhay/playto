@@ -1,4 +1,9 @@
 const BASE_URL = import.meta.env.VITE_API_URL || '';
+
+if (import.meta.env.PROD && !BASE_URL) {
+    console.error('CRITICAL: VITE_API_URL is missing in production build!');
+}
+
 const API_BASE = `${BASE_URL}/api`;
 
 async function fetchApi(url, options = {}) {

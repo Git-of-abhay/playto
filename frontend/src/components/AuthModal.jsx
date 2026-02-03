@@ -11,6 +11,12 @@ export default function AuthModal({ onLogin, onClose }) {
 
     async function handleSubmit(e) {
         e.preventDefault();
+
+        if (import.meta.env.PROD && !import.meta.env.VITE_API_URL) {
+            setError('System Error: VITE_API_URL is missing in Vercel settings. Please configure it.');
+            return;
+        }
+
         setLoading(true);
         setError(null);
 
