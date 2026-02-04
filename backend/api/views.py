@@ -1,47 +1,55 @@
+# Extended views file with all new features
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
+from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny, IsAuthenticated
 from django.contrib.auth.models import User
 from django.db import transaction, IntegrityError
-from django.db.models import Count, Sum, Case, When, IntegerField, Value, Q
+from django.db.models import Count, Sum, Case, When, IntegerField, Value, Q, Exists, OuterRef
 from django.utils import timezone
-from datetime import timedelta
+from datetime import timedelta, date
 from django.core.management import call_command
+from django.shortcuts import get_object_or_404
 
-from .models import Post, Comment, Like, Profile
+from .models import (
+    Post, Comment, Like, Profile, Follow, Block, Mute, Report, Notification,
+    Community, CommunityMembership, Topic, ChatMessage,
+    Course, Module, Lesson, Enrollment, LessonProgress, Assignment, AssignmentSubmission,
+    Badge, UserBadge, UserPoints,
+    Subscription, Payment
+)
 from .serializers import (
-    PostSerializer, PostListSerializer, CommentSerializer, 
-    LeaderboardSerializer, UserSerializer
+    PostSerializer, PostListSerializer, CommentSerializer, ProfileCommentSerializer,
+    LeaderboardSerializer, UserSerializer, NotificationSerializer, ReportSerializer,
+    CommunitySerializer, TopicSerializer, ChatMessageSerializer,
+    CourseSerializer, ModuleSerializer, LessonSerializer, EnrollmentSerializer,
+    BadgeSerializer, UserBadgeSerializer, UserPointsSerializer,
+    SubscriptionSerializer, PaymentSerializer
 )
 
+
+# ============ EXISTING VIEWS (Enhanced) ============
 
 class PostViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly]
     
     def get_queryset(self):
-        # Base queryset
         queryset = Post.objects.select_related('author', 'author__profile').prefetch_related('likes')
         
-        # Annotate user_has_liked if user is authenticated
         user = self.request.user
         if user.is_authenticated:
-            # This is the most robust way to check likes vs Python loops
-            from django.db.models import Exists, OuterRef
             queryset = queryset.annotate(
                 has_liked_annotation=Exists(
                     Like.objects.filter(user=user, post=OuterRef('pk'))
                 )
             )
             
-        # For list view, just count comments
         if self.action == 'list':
             queryset = queryset.annotate(
                 like_count=Count('likes', distinct=True),
                 comment_count=Count('comments', distinct=True)
             )
-        # For detail view, prefetch all comments for tree building
         elif self.action == 'retrieve':
             queryset = queryset.prefetch_related(
                 'comments__author',
@@ -56,11 +64,12 @@ class PostViewSet(viewsets.ModelViewSet):
         return PostSerializer
     
     def perform_create(self, serializer):
-        serializer.save(author=self.request.user)
+        post = serializer.save(author=self.request.user)
+        # Award points for creating post
+        self._award_points(self.request.user, 10)
     
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
-        # Attach prefetched comments for the serializer
         instance.prefetched_comments = list(instance.comments.all())
         instance.prefetched_likes = list(instance.likes.all())
         serializer = self.get_serializer(instance)
@@ -68,11 +77,9 @@ class PostViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def like(self, request, pk=None):
-        """Toggle like on a post with race condition prevention"""
         post = self.get_object()
         
         with transaction.atomic():
-            # select_for_update prevents race conditions
             existing_like = Like.objects.filter(
                 user=request.user, 
                 post=post
@@ -85,14 +92,36 @@ class PostViewSet(viewsets.ModelViewSet):
                 try:
                     Like.objects.create(user=request.user, post=post)
                     liked = True
+                    # Award points to post author
+                    self._award_points(post.author, 5)
                 except IntegrityError:
-                    # Double-like attempt blocked by DB constraint
                     return Response({'error': 'Already liked'}, status=status.HTTP_400_BAD_REQUEST)
         
         return Response({
             'liked': liked,
             'like_count': post.likes.count()
         })
+
+    def _award_points(self, user, points):
+        """Helper to award points and check for level ups"""
+        user_points, created = UserPoints.objects.get_or_create(user=user)
+        user_points.total_points += points
+        
+        # Simple leveling system
+        new_level = (user_points.total_points // 100) + 1
+        if new_level > user_points.level:
+            user_points.level = new_level
+            # Check for badges
+            self._check_badges(user)
+        
+        user_points.save()
+
+    def _check_badges(self, user):
+        """Check and award badges based on points"""
+        user_points = user.points.total_points
+        badges_to_award = Badge.objects.filter(points_required__lte=user_points)
+        for badge in badges_to_award:
+            UserBadge.objects.get_or_create(user=user, badge=badge)
 
 
 class CommentViewSet(viewsets.ModelViewSet):
@@ -101,11 +130,20 @@ class CommentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly]
     
     def perform_create(self, serializer):
-        serializer.save(author=self.request.user)
+        comment = serializer.save(author=self.request.user)
+        # Award points
+        self._award_points(self.request.user, 2)
+        # Create notification for post author
+        if comment.post.author != self.request.user:
+            Notification.objects.create(
+                user=comment.post.author,
+                type='comment',
+                message=f"{self.request.user.username} commented on your post",
+                link=f"/post/{comment.post.id}"
+            )
     
     @action(detail=True, methods=['post'])
     def like(self, request, pk=None):
-        """Toggle like on a comment with race condition prevention"""
         comment = self.get_object()
         
         with transaction.atomic():
@@ -121,6 +159,7 @@ class CommentViewSet(viewsets.ModelViewSet):
                 try:
                     Like.objects.create(user=request.user, comment=comment)
                     liked = True
+                    self._award_points(comment.author, 1)
                 except IntegrityError:
                     return Response({'error': 'Already liked'}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -129,70 +168,309 @@ class CommentViewSet(viewsets.ModelViewSet):
             'like_count': comment.likes.count()
         })
 
+    def _award_points(self, user, points):
+        user_points, created = UserPoints.objects.get_or_create(user=user)
+        user_points.total_points += points
+        user_points.save()
+
+
+# ============ SOCIAL FEATURES ============
+
+class FollowView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, username):
+        user_to_follow = get_object_or_404(User, username=username)
+        
+        if user_to_follow == request.user:
+            return Response({'error': 'Cannot follow yourself'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        follow, created = Follow.objects.get_or_create(
+            user_from=request.user,
+            user_to=user_to_follow
+        )
+        
+        if created:
+            # Create notification
+            Notification.objects.create(
+                user=user_to_follow,
+                type='follow',
+                message=f"{request.user.username} started following you",
+                link=f"/profile/{request.user.username}"
+            )
+        
+        return Response({'following': True})
+
+    def delete(self, request, username):
+        user_to_unfollow = get_object_or_404(User, username=username)
+        Follow.objects.filter(user_from=request.user, user_to=user_to_unfollow).delete()
+        return Response({'following': False})
+
+
+class BlockView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, username):
+        user_to_block = get_object_or_404(User, username=username)
+        
+        if user_to_block == request.user:
+            return Response({'error': 'Cannot block yourself'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        Block.objects.get_or_create(blocker=request.user, blocked=user_to_block)
+        # Also unfollow
+        Follow.objects.filter(user_from=request.user, user_to=user_to_block).delete()
+        Follow.objects.filter(user_from=user_to_block, user_to=request.user).delete()
+        
+        return Response({'blocked': True})
+
+    def delete(self, request, username):
+        user_to_unblock = get_object_or_404(User, username=username)
+        Block.objects.filter(blocker=request.user, blocked=user_to_unblock).delete()
+        return Response({'blocked': False})
+
+
+class MuteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, username):
+        user_to_mute = get_object_or_404(User, username=username)
+        Mute.objects.get_or_create(muter=request.user, muted=user_to_mute)
+        return Response({'muted': True})
+
+    def delete(self, request, username):
+        user_to_unmute = get_object_or_404(User, username=username)
+        Mute.objects.filter(muter=request.user, muted=user_to_unmute).delete()
+        return Response({'muted': False})
+
+
+class ReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ReportSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(reporter=request.user)
+            return Response({'message': 'Report submitted successfully'}, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class NotificationViewSet(viewsets.ModelViewSet):
+    serializer_class = NotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Notification.objects.filter(user=self.request.user)
+
+    @action(detail=False, methods=['post'])
+    def mark_all_read(self, request):
+        Notification.objects.filter(user=request.user, read=False).update(read=True)
+        return Response({'message': 'All notifications marked as read'})
+
+
+# ============ COMMUNITY & CHAT ============
+
+class CommunityViewSet(viewsets.ModelViewSet):
+    queryset = Community.objects.all()
+    serializer_class = CommunitySerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def perform_create(self, serializer):
+        community = serializer.save(creator=self.request.user)
+        # Auto-join creator as owner
+        CommunityMembership.objects.create(
+            user=self.request.user,
+            community=community,
+            role='owner'
+        )
+
+    @action(detail=True, methods=['post'])
+    def join(self, request, pk=None):
+        community = self.get_object()
+        
+        # Check if already member
+        if community.members.filter(id=request.user.id).exists():
+            return Response({'error': 'Already a member'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if paid community
+        if community.is_paid:
+            return Response({'error': 'Paid community - payment required'}, status=status.HTTP_402_PAYMENT_REQUIRED)
+        
+        CommunityMembership.objects.create(
+            user=request.user,
+            community=community,
+            role='member'
+        )
+        return Response({'message': 'Joined successfully'})
+
+    @action(detail=True, methods=['post'])
+    def leave(self, request, pk=None):
+        community = self.get_object()
+        CommunityMembership.objects.filter(user=request.user, community=community).delete()
+        return Response({'message': 'Left community'})
+
+
+class TopicViewSet(viewsets.ModelViewSet):
+    serializer_class = TopicSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def get_queryset(self):
+        community_id = self.request.query_params.get('community')
+        if community_id:
+            return Topic.objects.filter(community_id=community_id)
+        return Topic.objects.all()
+
+
+class ChatMessageViewSet(viewsets.ModelViewSet):
+    serializer_class = ChatMessageSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        topic_id = self.request.query_params.get('topic')
+        if topic_id:
+            return ChatMessage.objects.filter(topic_id=topic_id)
+        return ChatMessage.objects.all()
+
+    def perform_create(self, serializer):
+        serializer.save(author=self.request.user)
+
+
+# ============ COURSE SYSTEM ============
+
+class CourseViewSet(viewsets.ModelViewSet):
+    queryset = Course.objects.filter(is_published=True)
+    serializer_class = CourseSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def perform_create(self, serializer):
+        serializer.save(instructor=self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def enroll(self, request, pk=None):
+        course = self.get_object()
+        
+        # Check if already enrolled
+        if course.enrollments.filter(user=request.user).exists():
+            return Response({'error': 'Already enrolled'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if paid course
+        if course.is_paid:
+            return Response({'error': 'Paid course - payment required'}, status=status.HTTP_402_PAYMENT_REQUIRED)
+        
+        Enrollment.objects.create(user=request.user, course=course)
+        return Response({'message': 'Enrolled successfully'})
+
+
+class EnrollmentViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = EnrollmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Enrollment.objects.filter(user=self.request.user)
+
+
+class LessonViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Lesson.objects.all()
+    serializer_class = LessonSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    @action(detail=True, methods=['post'])
+    def complete(self, request, pk=None):
+        lesson = self.get_object()
+        progress, created = LessonProgress.objects.get_or_create(
+            user=request.user,
+            lesson=lesson
+        )
+        progress.completed = True
+        progress.completed_at = timezone.now()
+        progress.save()
+        
+        # Award points
+        user_points, _ = UserPoints.objects.get_or_create(user=request.user)
+        user_points.total_points += 20
+        user_points.save()
+        
+        return Response({'message': 'Lesson marked complete'})
+
+
+# ============ GAMIFICATION ============
+
+class BadgeViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Badge.objects.all()
+    serializer_class = BadgeSerializer
+    permission_classes = [AllowAny]
+
+
+class UserPointsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        points, created = UserPoints.objects.get_or_create(user=request.user)
+        serializer = UserPointsSerializer(points)
+        return Response(serializer.data)
+
 
 class LeaderboardView(APIView):
-    """
-    Top 5 users by karma earned in the LAST 24 HOURS ONLY.
-    
-    Karma calculation:
-    - 1 Like on your Post = 5 Karma
-    - 1 Like on your Comment = 1 Karma
-    
-    This is calculated dynamically from Like timestamps,
-    NOT stored in a simple integer field.
-    """
     permission_classes = [AllowAny]
     
     def get(self, request):
-        cutoff = timezone.now() - timedelta(hours=24)
+        time_range = request.query_params.get('range', '24h')  # 24h, 7d, all-time
         
-        # Simpler approach: calculate karma for each user individually
-        # This is more reliable than complex nested aggregations
+        if time_range == '24h':
+            cutoff = timezone.now() - timedelta(hours=24)
+            recent_likes = Like.objects.filter(created_at__gte=cutoff).select_related(
+                'post__author', 'comment__author'
+            )
+        elif time_range == '7d':
+            cutoff = timezone.now() - timedelta(days=7)
+            recent_likes = Like.objects.filter(created_at__gte=cutoff).select_related(
+                'post__author', 'comment__author'
+            )
+        else:  # all-time from UserPoints
+            top_users = UserPoints.objects.select_related('user').order_by('-total_points')[:10]
+            return Response([{
+                'id': up.user.id,
+                'username': up.user.username,
+                'points': up.total_points,
+                'level': up.level,
+                'streak': up.streak_days
+            } for up in top_users])
         
-        # Get all recent likes
-        recent_likes = Like.objects.filter(created_at__gte=cutoff).select_related(
-            'post__author', 'comment__author'
-        )
-        
-        # Calculate karma per user
+        # Calculate karma from likes
         user_karma = {}
         for like in recent_likes:
-            # Post like = 5 karma for post author
             if like.post_id:
                 author_id = like.post.author_id
                 if author_id not in user_karma:
                     user_karma[author_id] = {'karma': 0, 'username': like.post.author.username}
                 user_karma[author_id]['karma'] += 5
             
-            # Comment like = 1 karma for comment author
             if like.comment_id:
                 author_id = like.comment.author_id
                 if author_id not in user_karma:
                     user_karma[author_id] = {'karma': 0, 'username': like.comment.author.username}
                 user_karma[author_id]['karma'] += 1
         
-        # Sort by karma and take top 5
         sorted_users = sorted(
             [{'id': uid, 'username': data['username'], 'karma_24h': data['karma']} 
              for uid, data in user_karma.items()],
             key=lambda x: x['karma_24h'],
             reverse=True
-        )[:5]
+        )[:10]
         
         return Response(sorted_users)
 
 
-# CSRF-exempt authentication for public auth endpoints
+# ============ EXISTING AUTH VIEWS ============
+
 class CsrfExemptSessionAuthentication:
     def authenticate(self, request):
-        return None  # Allow unauthenticated access
+        return None
     
     def enforce_csrf(self, request):
-        return  # Skip CSRF check
+        return
 
 
 class RegisterView(APIView):
-    """Simple registration for demo purposes"""
     authentication_classes = [CsrfExemptSessionAuthentication]
     permission_classes = [AllowAny]
     
@@ -204,7 +482,7 @@ class RegisterView(APIView):
         if not username or not password:
             return Response({'error': 'Username and password required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Strict Password Validation
+        # Password validation
         if len(password) < 8:
             return Response({'error': 'Password must be at least 8 characters'}, status=status.HTTP_400_BAD_REQUEST)
         if not any(c.isdigit() for c in password):
@@ -218,16 +496,15 @@ class RegisterView(APIView):
         try:
             with transaction.atomic():
                 user = User.objects.create_user(username=username, password=password, first_name=name)
-                # Create profile
                 Profile.objects.create(user=user)
+                UserPoints.objects.create(user=user)  # Initialize points
         except Exception as e:
             return Response({'error': 'Registration failed'}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+        return Response(UserSerializer(user, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
 class LoginView(APIView):
-    """Custom login endpoint"""
     authentication_classes = [CsrfExemptSessionAuthentication]
     permission_classes = [AllowAny]
     
@@ -240,12 +517,28 @@ class LoginView(APIView):
         user = authenticate(request, username=username, password=password)
         if user is not None:
             login(request, user)
-            return Response(UserSerializer(user).data)
+            # Update streak
+            self._update_streak(user)
+            return Response(UserSerializer(user, context={'request': request}).data)
         return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    def _update_streak(self, user):
+        points, _ = UserPoints.objects.get_or_create(user=user)
+        today = date.today()
+        
+        if points.last_activity:
+            days_diff = (today - points.last_activity).days
+            if days_diff == 1:
+                points.streak_days += 1
+            elif days_diff > 1:
+                points.streak_days = 1
+        else:
+            points.streak_days = 1
+        
+        points.save()
 
 
 class LogoutView(APIView):
-    """Custom logout endpoint"""
     authentication_classes = [CsrfExemptSessionAuthentication]
     permission_classes = [AllowAny]
     
@@ -256,12 +549,11 @@ class LogoutView(APIView):
 
 
 class MeView(APIView):
-    """Get or update current user info"""
     permission_classes = [AllowAny]
     
     def get(self, request):
         if request.user.is_authenticated:
-            return Response(UserSerializer(request.user).data)
+            return Response(UserSerializer(request.user, context={'request': request}).data)
         return Response({'error': 'Not authenticated'}, status=status.HTTP_401_UNAUTHORIZED)
 
     def put(self, request):
@@ -270,24 +562,19 @@ class MeView(APIView):
             
         user = request.user
         
-        # Update name
         if 'name' in request.data:
             user.first_name = request.data['name']
             user.save()
             
-        # Update avatar
         if 'avatar' in request.FILES:
-            # Ensure profile exists
             profile, created = Profile.objects.get_or_create(user=user)
             profile.avatar = request.FILES['avatar']
             profile.save()
             
-        # Refresh serializers context
         return Response(UserSerializer(user, context={'request': request}).data)
 
 
 class UserProfileView(APIView):
-    """Get public profile stats for a user"""
     permission_classes = [AllowAny]
     
     def get(self, request, username):
@@ -296,14 +583,14 @@ class UserProfileView(APIView):
         except User.DoesNotExist:
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
             
-        # Calculate Total Karma (Lifetime)
         post_likes = Like.objects.filter(post__author=target_user).count()
         comment_likes = Like.objects.filter(comment__author=target_user).count()
         total_karma = (post_likes * 5) + (comment_likes * 1)
         
-        # Get recent activity
         recent_posts = Post.objects.filter(author=target_user).order_by('-created_at')[:5]
-        recent_comments = Comment.objects.filter(author=target_user).order_by('-created_at')[:5]
+        recent_comments = Comment.objects.filter(author=target_user)\
+            .select_related('post', 'post__author', 'post__author__profile')\
+            .order_by('-created_at')[:5]
         
         user_data = UserSerializer(target_user, context={'request': request}).data
         
@@ -317,18 +604,17 @@ class UserProfileView(APIView):
                 'likes_received': post_likes + comment_likes
             },
             'recent_posts': PostListSerializer(recent_posts, many=True, context={'request': request}).data,
-            'recent_comments': CommentSerializer(recent_comments, many=True, context={'request': request}).data
+            'recent_comments': ProfileCommentSerializer(recent_comments, many=True, context={'request': request}).data
         })
 
 
 class SeedDataView(APIView):
-    """Temporary view to trigger seeding from the browser"""
     permission_classes = [AllowAny]
     authentication_classes = [CsrfExemptSessionAuthentication]
 
     def get(self, request):
         try:
             call_command('seed_data')
-            return Response({'message': 'Database seeded successfully! Created 50 users, posts, and comments.'})
+            return Response({'message': 'Database seeded successfully!'})
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { getUserProfile, updateProfile } from '../api';
 import PostCard from './PostCard';
 
-export default function ProfileModal({ username, currentUser, onClose, onUpdate }) {
+export default function ProfileModal({ username, currentUser, onClose, onUpdate, onViewPost }) {
     const [profile, setProfile] = useState(null);
     const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState('posts');
@@ -220,8 +220,8 @@ export default function ProfileModal({ username, currentUser, onClose, onUpdate 
                                         <button
                                             onClick={() => setActiveTab('posts')}
                                             className={`px-6 py-3 font-medium text-sm transition-colors relative ${activeTab === 'posts'
-                                                    ? 'text-blue-600'
-                                                    : 'text-gray-500 hover:text-gray-800'
+                                                ? 'text-blue-600'
+                                                : 'text-gray-500 hover:text-gray-800'
                                                 }`}
                                         >
                                             Recent Posts
@@ -232,8 +232,8 @@ export default function ProfileModal({ username, currentUser, onClose, onUpdate 
                                         <button
                                             onClick={() => setActiveTab('comments')}
                                             className={`px-6 py-3 font-medium text-sm transition-colors relative ${activeTab === 'comments'
-                                                    ? 'text-blue-600'
-                                                    : 'text-gray-500 hover:text-gray-800'
+                                                ? 'text-blue-600'
+                                                : 'text-gray-500 hover:text-gray-800'
                                                 }`}
                                         >
                                             Recent Replies
@@ -268,14 +268,28 @@ export default function ProfileModal({ username, currentUser, onClose, onUpdate 
                                                 ) : (
                                                     <div className="space-y-3">
                                                         {profile.recent_comments.map(comment => (
-                                                            <div key={comment.id} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                                                                <div className="text-xs text-gray-500 mb-1">
-                                                                    Replied {new Date(comment.created_at).toLocaleDateString()}
+                                                            <div key={comment.id} className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:bg-white transition-colors cursor-pointer"
+                                                                onClick={() => onViewPost && onViewPost(comment.post)}>
+                                                                <div className="text-xs text-gray-500 mb-2 flex items-center gap-2">
+                                                                    <span className="bg-gray-200 px-2 py-0.5 rounded text-gray-600 font-medium">
+                                                                        Replying to @{comment.post_author_username}
+                                                                    </span>
+                                                                    <span>•</span>
+                                                                    <span>{new Date(comment.created_at).toLocaleDateString()}</span>
                                                                 </div>
-                                                                <p className="text-gray-800">{comment.content}</p>
-                                                                <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
-                                                                    <span className="flex items-center gap-1">
-                                                                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+
+                                                                {/* Context Snippet */}
+                                                                <div className="text-xs text-gray-500 mb-3 italic border-l-2 border-blue-200 pl-3 py-1">
+                                                                    "{comment.post_title && comment.post_title.length > 60
+                                                                        ? comment.post_title.substring(0, 60) + '...'
+                                                                        : comment.post_title || 'Post'}"
+                                                                </div>
+
+                                                                <p className="text-gray-800 font-medium">{comment.content}</p>
+
+                                                                <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
+                                                                    <span className="flex items-center gap-1 group-hover:text-blue-600 transition-colors">
+                                                                        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                                                                             <path d="M2 10.5a1.5 1.5 0 113 0v6a1.5 1.5 0 01-3 0v-6zM6 10.333v5.43a2 2 0 001.106 1.79l.05.025A4 4 0 008.943 18h5.416a2 2 0 001.962-1.608l1.2-6A2 2 0 0015.56 8H12V4a2 2 0 00-2-2 1 1 0 00-1 1v.667a4 4 0 01-.8 2.4L6.8 7.933a4 4 0 00-.8 2.4z" />
                                                                         </svg>
                                                                         {comment.like_count} likes

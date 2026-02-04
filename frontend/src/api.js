@@ -1,184 +1,112 @@
-const BASE_URL = import.meta.env.VITE_API_URL || '';
+// Enhanced API client with all new endpoints
+const API_BASE = 'http://localhost:8000/api';
 
-if (import.meta.env.PROD && !BASE_URL) {
-    console.error('CRITICAL: VITE_API_URL is missing in production build!');
+async function apiRequest(endpoint, options = {}) {
+    try {
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+            ...options,
+            headers: {
+                'Content-Type': 'application/json',
+                ...options.headers,
+            },
+            credentials: 'include',
+        });
+
+        // Check content type before parsing
+        const contentType = response.headers.get('content-type');
+
+        if (!response.ok) {
+            // Try to get error message from JSON, or use status text
+            if (contentType && contentType.includes('application/json')) {
+                const error = await response.json();
+                throw new Error(error.error || error.message || 'Request failed');
+            } else {
+                // Got HTML or other non-JSON response
+                throw new Error(`Server error: ${response.status} ${response.statusText}`);
+            }
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('API Request Error:', error);
+        throw error;
+    }
 }
 
-const API_BASE = `${BASE_URL}/api`;
+// ============ AUTH ============
+export const register = (username, password, name) => apiRequest('/register/', {
+    method: 'POST',
+    body: JSON.stringify({ username, password, name })
+});
+export const login = (username, password) => apiRequest('/login/', {
+    method: 'POST',
+    body: JSON.stringify({ username, password })
+});
+export const logout = () => apiRequest('/logout/', { method: 'POST' });
+export const getCurrentUser = () => apiRequest('/me/');
 
-async function fetchApi(url, options = {}) {
-    const headers = { ...options.headers };
-    if (!(options.body instanceof FormData)) {
-        headers['Content-Type'] = 'application/json';
-    }
+export async function updateProfile(data) {
+    const formData = new FormData();
+    if (data.name) formData.append('name', data.name);
+    if (data.avatar) formData.append('avatar', data.avatar);
 
-    const response = await fetch(url, {
-        ...options,
-        headers,
+    const response = await fetch(`${API_BASE}/me/`, {
+        method: 'PUT',
+        body: formData,
         credentials: 'include',
     });
 
-    // 1. Check for HTML response (Critical Fix for "Unexpected token")
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("text/html")) {
-        const text = await response.text();
-        console.error('API Error: Received HTML instead of JSON', { url, text });
-        throw new Error(`System Error: Server returned HTML. URL: ${url}. Response: ${text.substring(0, 100)}...`);
-    }
-
-    // 2. Try to parse JSON
-    let data;
-    try {
-        data = await response.json();
-    } catch (err) {
-        // Fallback if content-type wasn't html but parsing still failed
-        throw new Error(`API Error: Failed to parse JSON response from ${url}`);
-    }
-
-    // 3. Handle HTTP Errors (400, 500 etc)
-    if (!response.ok) {
-        // Extract helpful error message from backend
-        // Backend returns { error: "message" } or { detail: "message" }
-        const errorMessage = data.error || data.detail || JSON.stringify(data);
-        throw new Error(errorMessage);
-    }
-
-    // 4. Return just the data (simpler for callers)
-    // Note: existing code expects response object or data depending on function
-    // We need to preserve compatibility, so we attach data to response or return response
-    // But getting into callers, they mostly do `res.json()`.
-    // Let's stick to returning response object but "enhanced" with pre-parsed data?
-    // Actually, looking at usages: `const res = await fetchApi(...)` then `res.json()`.
-    // We already consumed the stream! match usage.
-
-    // RE-ARCHITECTING fetchApi to return the parsed data directly would break callers.
-    // Callers expect a Response object with .json() method.
-    // Since we already consumed the body, we must mock the .json() method.
-
-    return {
-        ok: response.ok,
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-        json: async () => data,
-        url: response.url
-    };
+    if (!response.ok) throw new Error('Profile update failed');
+    return response.json();
 }
 
-// Posts
-export async function getPosts() {
-    const res = await fetchApi(`${API_BASE}/posts/`);
-    return res.json();
-}
+// ============ POSTS & COMMENTS ============
+export const getPosts = () => apiRequest('/posts/');
+export const createPost = (content) => apiRequest('/posts/', { method: 'POST', body: JSON.stringify({ content }) });
+export const likePost = (id) => apiRequest(`/posts/${id}/like/`, { method: 'POST' });
+export const createComment = (data) => apiRequest('/comments/', { method: 'POST', body: JSON.stringify(data) });
+export const likeComment = (id) => apiRequest(`/comments/${id}/like/`, { method: 'POST' });
 
-export async function getPost(id) {
-    const res = await fetchApi(`${API_BASE}/posts/${id}/`);
-    return res.json();
-}
+// ============ SOCIAL FEATURES ============
+export const followUser = (username) => apiRequest(`/users/${username}/follow/`, { method: 'POST' });
+export const unfollowUser = (username) => apiRequest(`/users/${username}/follow/`, { method: 'DELETE' });
+export const blockUser = (username) => apiRequest(`/users/${username}/block/`, { method: 'POST' });
+export const unblockUser = (username) => apiRequest(`/users/${username}/block/`, { method: 'DELETE' });
+export const muteUser = (username) => apiRequest(`/users/${username}/mute/`, { method: 'POST' });
+export const unmuteUser = (username) => apiRequest(`/users/${username}/mute/`, { method: 'DELETE' });
+export const reportContent = (data) => apiRequest('/report/', { method: 'POST', body: JSON.stringify(data) });
 
-export async function createPost(content) {
-    const res = await fetchApi(`${API_BASE}/posts/`, {
-        method: 'POST',
-        body: JSON.stringify({ content }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-        throw new Error(data.detail || 'Failed to create post');
-    }
-    return data;
-}
+// ============ NOTIFICATIONS ============
+export const getNotifications = () => apiRequest('/notifications/');
+export const markNotificationRead = (id) => apiRequest(`/notifications/${id}/`, { method: 'PATCH', body: JSON.stringify({ read: true }) });
+export const markAllNotificationsRead = () => apiRequest('/notifications/mark_all_read/', { method: 'POST' });
 
-export async function likePost(id) {
-    const res = await fetchApi(`${API_BASE}/posts/${id}/like/`, {
-        method: 'POST',
-    });
-    const data = await res.json();
-    if (!res.ok) {
-        throw new Error(data.detail || 'Failed to like post');
-    }
-    return data;
-}
+// ============ COMMUNITIES ============
+export const getCommunities = () => apiRequest('/communities/');
+export const getCommunity = (id) => apiRequest(`/communities/${id}/`);
+export const createCommunity = (data) => apiRequest('/communities/', { method: 'POST', body: JSON.stringify(data) });
+export const joinCommunity = (id) => apiRequest(`/communities/${id}/join/`, { method: 'POST' });
+export const leaveCommunity = (id) => apiRequest(`/communities/${id}/leave/`, { method: 'POST' });
 
-// Comments
-export async function createComment(postId, content, parentId = null) {
-    const res = await fetchApi(`${API_BASE}/comments/`, {
-        method: 'POST',
-        body: JSON.stringify({ post: postId, content, parent: parentId }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-        throw new Error(data.detail || 'Failed to create comment');
-    }
-    return data;
-}
+// ============ CHAT ============
+export const getTopics = (communityId) => apiRequest(`/topics/?community=${communityId}`);
+export const getChatMessages = (topicId) => apiRequest(`/chat/?topic=${topicId}`);
+export const sendChatMessage = (data) => apiRequest('/chat/', { method: 'POST', body: JSON.stringify(data) });
 
-export async function likeComment(id) {
-    const res = await fetchApi(`${API_BASE}/comments/${id}/like/`, {
-        method: 'POST',
-    });
-    const data = await res.json();
-    if (!res.ok) {
-        throw new Error(data.detail || 'Failed to like comment');
-    }
-    return data;
-}
+// ============ COURSES ============
+export const getCourses = () => apiRequest('/courses/');
+export const getCourse = (id) => apiRequest(`/courses/${id}/`);
+export const enrollInCourse = (id) => apiRequest(`/courses/${id}/enroll/`, { method: 'POST' });
+export const getMyEnrollments = () => apiRequest('/enrollments/');
+export const completeLesson = (id) => apiRequest(`/lessons/${id}/complete/`, { method: 'POST' });
 
-// Leaderboard
-export async function getLeaderboard() {
-    const res = await fetchApi(`${API_BASE}/leaderboard/`);
-    return res.json();
-}
+// ============ GAMIFICATION ============
+export const getLeaderboard = (range = '24h') => apiRequest(`/leaderboard/?range=${range}`);
+export const getBadges = () => apiRequest('/badges/');
+export const getUserPoints = () => apiRequest('/points/');
 
-// Auth
-export async function register(username, password, name) {
-    const res = await fetchApi(`${API_BASE}/register/`, {
-        method: 'POST',
-        body: JSON.stringify({ username, password, name }),
-    });
-    return res.json();
-}
+// ============ PROFILE ============
+export const getUserProfile = (username) => apiRequest(`/profile/${username}/`);
 
-export async function login(username, password) {
-    const res = await fetchApi(`${API_BASE}/login/`, {
-        method: 'POST',
-        body: JSON.stringify({ username, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-        throw new Error(data.error || 'Login failed');
-    }
-    return data;
-}
-
-export async function logout() {
-    await fetchApi(`${API_BASE}/logout/`, {
-        method: 'POST',
-    });
-}
-
-export async function getCurrentUser() {
-    const res = await fetchApi(`${API_BASE}/me/`);
-    if (res.ok) {
-        return res.json();
-    }
-    return null;
-}
-
-export async function getUserProfile(username) {
-    const res = await fetchApi(`${API_BASE}/profile/${username}/`);
-    if (!res.ok) {
-        throw new Error('Profile not found');
-    }
-    return res.json();
-}
-
-export async function updateProfile(formData) {
-    const res = await fetchApi(`${API_BASE}/me/`, {
-        method: 'PUT',
-        body: formData, // FormData doesn't need Content-Type header (browser sets it)
-    });
-    if (!res.ok) {
-        throw new Error('Failed to update profile');
-    }
-    return res.json();
-}
+// ============ UTILS ============
+export const seedData = () => apiRequest('/seed_force_trigger/');

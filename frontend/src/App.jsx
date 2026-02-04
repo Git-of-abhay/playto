@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
-import { getPosts, getPost, getCurrentUser, logout } from './api';
+import { getPosts, getCurrentUser, logout } from './api';
 import PostCard from './components/PostCard';
 import CreatePost from './components/CreatePost';
-import Leaderboard from './components/Leaderboard';
 import AuthModal from './components/AuthModal';
 import ProfileModal from './components/ProfileModal';
+import Communities from './components/Communities';
+import Courses from './components/Courses';
+import Gamification from './components/Gamification';
+import NotificationBell from './components/NotificationBell';
 
 export default function App() {
   const [posts, setPosts] = useState([]);
@@ -13,13 +16,14 @@ export default function App() {
   const [showAuth, setShowAuth] = useState(false);
   const [viewingProfile, setViewingProfile] = useState(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [activeTab, setActiveTab] = useState('home'); // home | communities | courses | learn
 
   useEffect(() => {
     checkUser();
     loadPosts();
 
-    // Auto-refresh feed every 30 seconds
-    const interval = setInterval(loadPosts, 30000);
+    // Auto-refresh feed every 60 seconds
+    const interval = setInterval(loadPosts, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -29,102 +33,43 @@ export default function App() {
   }
 
   async function loadPosts() {
-    try {
-      const data = await getPosts();
-      const fullPosts = await Promise.all(
-        data.map(p => getPost(p.id))
-      );
-      setPosts(fullPosts);
-    } catch (err) {
-      console.error('Failed to load posts:', err);
-    } finally {
-      setLoading(false);
-    }
+    const data = await getPosts();
+    setPosts(data);
+    setLoading(false);
+  }
+
+  async function handleLogout() {
+    await logout();
+    setUser(null);
+    window.location.reload();
+  }
+
+  async function handleProfileUpdate() {
+    // Force full page reload to update avatar everywhere
+    window.location.reload();
   }
 
   function handleInteraction() {
-    loadPosts();
-    setRefreshTrigger(t => t + 1);
-  }
-
-  function handleNewPost(newPost) {
-    handleInteraction();
+    // Removed automatic refresh - keeps interactions instant
   }
 
   function handleUserClick(username) {
     setViewingProfile(username);
   }
 
-  async function handleLogin() {
-    setShowAuth(false);
-    await checkUser();
-    loadPosts();
-  }
-
-  async function handleLogout() {
-    await logout();
-    setUser(null);
-    loadPosts();
-    setViewingProfile(null);
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-100">
-      {/* LinkedIn-style Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-5xl mx-auto px-4 py-2 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="text-2xl font-bold text-blue-600 cursor-pointer" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-              Community
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {user ? (
-              <>
-                <button
-                  onClick={() => handleUserClick(user.username)}
-                  className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
-                >
-                  <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-semibold overflow-hidden">
-                    {user.avatar ? (
-                      <img src={user.avatar} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      (user.name || user.username)[0].toUpperCase()
-                    )}
-                  </div>
-                  <span className="text-sm font-medium text-gray-700">{user.name || user.username}</span>
-                </button>
-                <button
-                  onClick={handleLogout}
-                  className="px-4 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-colors"
-                >
-                  Sign Out
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={() => setShowAuth(true)}
-                className="px-5 py-2 bg-blue-600 text-white rounded-full font-semibold text-sm hover:bg-blue-700 transition-colors"
-              >
-                Sign In
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="max-w-5xl mx-auto py-6 px-4">
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
-          {/* Feed */}
-          <div className="space-y-4">
-            {/* Create Post Card */}
-            {user && (
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-                <CreatePost onCreated={handleNewPost} user={user} />
-              </div>
-            )}
+  // Render content based on active tab
+  function renderContent() {
+    switch (activeTab) {
+      case 'communities':
+        return <Communities user={user} />;
+      case 'courses':
+        return <Courses user={user} />;
+      case 'leaderboard':
+        return <Gamification user={user} />;
+      default:
+        return (
+          <div className="max-w-2xl mx-auto px-4 py-4 space-y-4">
+            {user && <CreatePost user={user} onCreate={loadPosts} />}
 
             {loading ? (
               <div className="flex justify-center py-12">
@@ -135,61 +80,164 @@ export default function App() {
                 <p className="text-gray-500">No posts yet. Be the first to share!</p>
               </div>
             ) : (
-              posts.map(post => (
-                <PostCard
-                  key={post.id}
-                  post={post}
-                  user={user}
-                  onUpdate={handleInteraction}
-                  onUserClick={handleUserClick}
-                />
-              ))
+              posts
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                .map(post => (
+                  <PostCard
+                    key={`${post.id}-${refreshTrigger}`}
+                    post={post}
+                    user={user}
+                    onUpdate={handleInteraction}
+                    onUserClick={handleUserClick}
+                  />
+                ))
             )}
           </div>
+        );
+    }
+  }
 
-          {/* Sidebar */}
-          <div className="hidden lg:block space-y-4">
-            <Leaderboard
-              refreshTrigger={refreshTrigger}
-              onUserClick={handleUserClick}
-            />
+  return (
+    <div className="min-h-screen bg-gray-100 pb-20 md:pb-0">
+      {/* Header */}
+      <header className="bg-white shadow-sm sticky top-0 z-40">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <h1
+              className="text-2xl font-bold text-blue-600 cursor-pointer"
+              onClick={() => setActiveTab('home')}
+            >
+              Playto
+            </h1>
 
-            {/* Karma Info Card */}
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-              <h3 className="font-semibold text-gray-900 mb-3">How Karma Works</h3>
-              <div className="space-y-2 text-sm text-gray-600">
-                <div className="flex items-center gap-2">
-                  <span className="text-blue-600 font-bold">+5</span>
-                  <span>When someone likes your post</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-blue-600 font-bold">+1</span>
-                  <span>When someone likes your comment</span>
-                </div>
+            {/* Desktop Navigation */}
+            <nav className="hidden md:flex gap-6">
+              <NavButton active={activeTab === 'home'} onClick={() => setActiveTab('home')}>
+                🏠 Home
+              </NavButton>
+              <NavButton active={activeTab === 'communities'} onClick={() => setActiveTab('communities')}>
+                👥 Communities
+              </NavButton>
+              <NavButton active={activeTab === 'courses'} onClick={() => setActiveTab('courses')}>
+                📚 Courses
+              </NavButton>
+              <NavButton active={activeTab === 'leaderboard'} onClick={() => setActiveTab('leaderboard')}>
+                🏆 Leaderboard
+              </NavButton>
+            </nav>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <NotificationBell user={user} />
+
+            {user ? (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setViewingProfile(user.username)}
+                  className="flex items-center gap-2 hover:bg-gray-100 rounded-lg px-3 py-2"
+                >
+                  {user.avatar ? (
+                    <img src={user.avatar} alt={user.name || user.username} className="w-8 h-8 rounded-full object-cover" />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-semibold">
+                      {(user.name || user.username).charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <span className="hidden md:inline font-semibold">{user.name || user.username}</span>
+                </button>
+                <button
+                  onClick={handleLogout}
+                  className="text-gray-600 hover:text-gray-800 px-3 py-2  hover:bg-gray-100 rounded-lg"
+                >
+                  Logout
+                </button>
               </div>
-              <p className="mt-3 text-xs text-gray-400">Leaderboard resets every 24 hours</p>
-            </div>
+            ) : (
+              <button
+                onClick={() => setShowAuth(true)}
+                className="bg-blue-600 text-white px-6 py-2 rounded-full font-semibold hover:bg-blue-700"
+              >
+                Get Started
+              </button>
+            )}
           </div>
         </div>
+      </header>
+
+      {/* Main Content */}
+      <main>
+        {renderContent()}
       </main>
 
-      {/* Auth Modal */}
+      {/* Mobile Bottom Navigation */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t shadow-lg z-40">
+        <div className="flex justify-around">
+          <MobileNavButton
+            active={activeTab === 'home'}
+            onClick={() => setActiveTab('home')}
+            icon="🏠"
+            label="Home"
+          />
+          <MobileNavButton
+            active={activeTab === 'communities'}
+            onClick={() => setActiveTab('communities')}
+            icon="👥"
+            label="Communities"
+          />
+          <MobileNavButton
+            active={activeTab === 'courses'}
+            onClick={() => setActiveTab('courses')}
+            icon="📚"
+            label="Courses"
+          />
+          <MobileNavButton
+            active={activeTab === 'leaderboard'}
+            onClick={() => setActiveTab('leaderboard')}
+            icon="🏆"
+            label="Rank"
+          />
+        </div>
+      </nav>
+
       {showAuth && (
-        <AuthModal
-          onLogin={handleLogin}
-          onClose={() => setShowAuth(false)}
-        />
+        <AuthModal onClose={() => setShowAuth(false)} onLogin={() => { setShowAuth(false); checkUser(); }} />
       )}
 
-      {/* Profile Modal */}
       {viewingProfile && (
         <ProfileModal
           username={viewingProfile}
           currentUser={user}
           onClose={() => setViewingProfile(null)}
-          onUpdate={handleInteraction}
+          onUpdate={handleProfileUpdate}
         />
       )}
     </div>
+  );
+}
+
+// Desktop nav button
+function NavButton({ children, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-4 py-2 rounded-lg font-semibold ${active ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'
+        }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Mobile bottom nav button
+function MobileNavButton({ icon, label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 flex flex-col items-center gap-1 py-3 ${active ? 'text-blue-600' : 'text-gray-600'
+        }`}
+    >
+      <span className="text-2xl">{icon}</span>
+      <span className="text-xs font-semibold">{label}</span>
+    </button>
   );
 }

@@ -23,7 +23,7 @@ export default function AuthModal({ onLogin, onClose }) {
         try {
             if (isLogin) {
                 await login(username, password);
-                onLogin();
+                window.location.reload(); // Force full reload to update user state
             } else {
                 const data = await register(username, password, name);
                 if (data.error) {
@@ -33,7 +33,7 @@ export default function AuthModal({ onLogin, onClose }) {
                 }
                 // Auto-login after register
                 await login(username, password);
-                onLogin();
+                window.location.reload(); // Force full reload to update user state
             }
         } catch (err) {
             setError(err.message || 'Authentication failed');
